@@ -1,0 +1,15 @@
+[project]
+name = "practise"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "google-adk>=1.2.1",
+    "google-generativeai>=0.8.5",
+    "litellm>=1.72.2",
+    "openai>=1.85.0",
+    "psutil>=7.0.0",
+    "python-dotenv>=1.1.0",
+    "yfinance>=0.2.62",
+]
