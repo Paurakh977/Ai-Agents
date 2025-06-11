@@ -11,5 +11,6 @@ dependencies = [
     "openai>=1.85.0",
     "psutil>=7.0.0",
     "python-dotenv>=1.1.0",
+    "requests>=2.32.4",
     "yfinance>=0.2.62",
 ]

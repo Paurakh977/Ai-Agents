@@ -1619,6 +1619,7 @@ dependencies = [
     { name = "openai" },
     { name = "psutil" },
     { name = "python-dotenv" },
+    { name = "requests" },
     { name = "yfinance" },
 ]
 
@@ -1630,6 +1631,7 @@ requires-dist = [
     { name = "openai", specifier = ">=1.85.0" },
     { name = "psutil", specifier = ">=7.0.0" },
     { name = "python-dotenv", specifier = ">=1.1.0" },
+    { name = "requests", specifier = ">=2.32.4" },
     { name = "yfinance", specifier = ">=0.2.62" },
 ]
 
