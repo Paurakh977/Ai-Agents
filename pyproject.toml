@@ -7,6 +7,7 @@ requires-python = ">=3.11"
 dependencies = [
     "google-adk>=1.2.1",
     "google-generativeai>=0.8.5",
+    "icecream>=2.1.4",
     "litellm>=1.72.2",
     "openai>=1.85.0",
     "psutil>=7.0.0",
