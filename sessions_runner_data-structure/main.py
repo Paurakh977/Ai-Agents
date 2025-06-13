@@ -5,7 +5,7 @@ from google.genai import types
 import asyncio
 from dotenv import load_dotenv
 from icecream import ic
-
+from google.adk.sessions import Session
 # Import the grounding handler
 from question_answer_agent.grounding_handler import GroundingMetadataHandler
 
@@ -48,6 +48,16 @@ async def create_session() -> InMemorySessionService:
         session_id=SESSION_ID,
         state=state,
     )
+    
+    #  test session
+    
+    await session_service.create_session(
+        app_name=APP_NAME,
+        user_id=USER_ID,
+        session_id="test_session_123",
+        state={"test_key": "test_value"},
+    )
+    
     return session_service
 
 async def call_agent(runner: Runner, user_input: str, session_id, user_id) -> dict:
@@ -80,9 +90,9 @@ async def call_agent(runner: Runner, user_input: str, session_id, user_id) -> di
 
 async def main():
     try:
-        my_session_service = await create_session()
+        session_service = await create_session()
         runner = Runner(
-            session_service=my_session_service,
+            session_service=session_service,
             app_name=APP_NAME,
             agent=root_agent,
         )
@@ -102,6 +112,26 @@ async def main():
         user_input = input("\n🤔 You: ")
         if user_input.lower() in ["exit", "quit"]:
             print("👋 Exiting the session.")
+            retrieved_session = await session_service.get_session(app_name=APP_NAME,
+                                                         user_id=USER_ID,
+                                                         session_id = SESSION_ID)
+            # ic(retrieved_session.events
+            # )
+            ic(session_service.__dict__)
+            ic(session_service.sessions)
+            list_of_existing_sessions = await session_service.list_sessions(
+                app_name=APP_NAME,
+                user_id=USER_ID,
+            )
+            ic(list_of_existing_sessions)
+            ic(list_of_existing_sessions.sessions)
+            ic(list_of_existing_sessions.sessions[-1].id)
+            get_specific_session = await session_service.get_session(
+                app_name=APP_NAME,
+                user_id=USER_ID,
+                session_id=list_of_existing_sessions.sessions[-1].id
+            )
+            ic(get_specific_session)
             break
         
         try:
