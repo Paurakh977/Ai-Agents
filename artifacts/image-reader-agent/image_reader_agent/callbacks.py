@@ -47,6 +47,23 @@ async def before_model_callback(
                         if hasattr(part.inline_data, "display_name"):
                             print(f"[Image Callback] Removing display_name from conversation history image")
                             delattr(part.inline_data, "display_name")
+                            
+    # Check if we have generated images in artifacts that need to be tracked
+    try:
+        artifacts = await callback_context.list_artifacts()
+        if artifacts:
+            print(f"[Image Callback] Current artifacts: {artifacts}")
+            
+            # Store available artifacts in state for reference
+            callback_context.state["available_artifacts"] = artifacts
+            
+            # For convenience, always attach the most recent image to enable editing
+            current_image = callback_context.state.get("current_image")
+            if current_image and current_image in artifacts:
+                print(f"[Image Callback] Reconnecting to current image: {current_image}")
+                await callback_context.attach_artifact_to_next_response(current_image)
+    except Exception as e:
+        print(f"[Image Callback] Error listing artifacts: {str(e)}")
 
     # Ensure image directory exists
     image_dir = ensure_image_directory_exists()
@@ -126,6 +143,8 @@ async def before_model_callback(
                 # Store the current image in state for future reference
                 callback_context.state["current_image"] = image_name
                 callback_context.state["current_image_path"] = image_path
+                callback_context.state["last_artifact_id"] = artifact_id
+                callback_context.state["last_artifact_filename"] = image_name
             except Exception as e:
                 print(f"[Image Callback] Error saving image as artifact: {str(e)}")
                 

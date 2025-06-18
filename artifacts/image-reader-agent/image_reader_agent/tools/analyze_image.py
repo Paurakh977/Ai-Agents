@@ -30,116 +30,211 @@ def analyze_image(
         Dictionary with analysis results
     """
     try:
-        # Get the current image from state
-        if image_id:
-            image_to_analyze = image_id
-        elif "current_image" in tool_context.state:
-            image_to_analyze = tool_context.state["current_image"]
-        else:
-            return {
-                "status": "error",
-                "message": "No image found to analyze. Please upload an image first.",
-            }
-
-        print(f"[Image Analysis] Analyzing image: {image_to_analyze}")
+        # Get the current image information from state
+        current_image = tool_context.state.get("current_image")
+        current_image_path = tool_context.state.get("current_image_path")
         
-        # Look for the image file directly
-        possible_paths = [
-            image_to_analyze,  # Direct path
-            os.path.join(IMAGE_DIR, image_to_analyze),  # In images dir
-            os.path.join(IMAGE_DIR, "generated", image_to_analyze),  # In generated dir
-        ]
-        
+        # Determine which image to analyze
         image_path = None
-        for path in possible_paths:
-            if os.path.exists(path):
-                image_path = path
-                break
+        image_data = None
+        image_filename = None
         
-        if not image_path:
-            return {
-                "status": "error",
-                "message": f"Image file '{image_to_analyze}' not found",
-            }
+        # If specific image_id is provided, use that
+        if image_id:
+            image_filename = image_id
+            print(f"[Image Analysis] Analyzing specific image: {image_id}")
             
-        # Read the image and create a new artifact
-        try:
-            with open(image_path, "rb") as f:
-                image_data = f.read()
+            # First try to find by id as path
+            if os.path.exists(image_id):
+                image_path = image_id
+                print(f"[Image Analysis] Using direct path: {image_path}")
             
-            # Determine mime type from file extension
-            extension = os.path.splitext(image_path)[1].lower()
-            if extension == ".jpg" or extension == ".jpeg":
-                mime_type = "image/jpeg"
-            elif extension == ".png":
-                mime_type = "image/png"
-            elif extension == ".gif":
-                mime_type = "image/gif"
+            # Check if it matches the current image
+            elif image_id == current_image and current_image_path and os.path.exists(current_image_path):
+                image_path = current_image_path
+                print(f"[Image Analysis] Using current image path: {image_path}")
+            
+            # Check standard locations
             else:
-                mime_type = f"image/{extension[1:]}"  # Remove the dot
+                possible_paths = [
+                    image_id,  # Direct path
+                    os.path.join(IMAGE_DIR, image_id),  # In images dir
+                    os.path.join(IMAGE_DIR, "generated", image_id),  # In generated subdir
+                ]
                 
-            # Create the artifact
-            image_artifact = types.Part(
-                inline_data=types.Blob(data=image_data, mime_type=mime_type)
-            )
-            
-            # Define an async function to handle all async operations
-            async def save_load_attach_artifact():
-                try:
-                    # Save the artifact asynchronously
-                    artifact_id = await tool_context.save_artifact(filename=image_to_analyze, artifact=image_artifact)
-                    print(f"[Image Analysis] Saved image as artifact: {image_to_analyze} (id: {artifact_id})")
+                for path in possible_paths:
+                    if os.path.exists(path):
+                        image_path = path
+                        print(f"[Image Analysis] Found image at: {image_path}")
+                        break
+                
+                # If still not found, try loading from artifacts
+                if not image_path:
+                    print(f"[Image Analysis] Image not found by path, trying artifacts")
                     
-                    # Load the artifact for the model
-                    await tool_context.load_artifact(filename=image_to_analyze)
-                    print(f"[Image Analysis] Loaded artifact for model: {image_to_analyze}")
+                    # Define an async function to load the artifact
+                    async def load_artifact_async():
+                        try:
+                            artifact = await tool_context.load_artifact(filename=image_id)
+                            if artifact and artifact.inline_data and artifact.inline_data.data:
+                                print(f"[Image Analysis] Successfully loaded artifact: {image_id}")
+                                return artifact.inline_data.data, artifact.inline_data.mime_type
+                            return None, None
+                        except Exception as e:
+                            print(f"[Image Analysis] Error loading artifact: {str(e)}")
+                            return None, None
                     
-                    # Attach the artifact to next response
-                    await tool_context.attach_artifact_to_next_response(image_to_analyze)
-                    print(f"[Image Analysis] Attached artifact to next response: {image_to_analyze}")
+                    # Run the async function in a new event loop
+                    loop = asyncio.new_event_loop()
+                    artifact_data, mime_type = loop.run_until_complete(load_artifact_async())
+                    loop.close()
                     
-                    return artifact_id
-                except Exception as e:
-                    print(f"[Image Analysis] Error in async operation: {str(e)}")
-                    return None
-            
-            # Create a new loop and run the async function in a separate thread
-            loop = asyncio.new_event_loop()
-            executor = ThreadPoolExecutor(max_workers=1)
-            
-            # Run the async operations in a separate thread
-            future = executor.submit(lambda: loop.run_until_complete(save_load_attach_artifact()))
-            artifact_id = future.result()
-            
-            # Clean up
-            executor.shutdown(wait=True)
-            loop.close()
-            
-            # Check if the artifact was handled successfully
-            if artifact_id:
-                # Return success along with image metadata
-                return {
-                    "status": "success",
-                    "message": f"Image {image_to_analyze} loaded for analysis.",
-                    "image": image_to_analyze,
-                    "image_displayed": True,
-                    "notes": "The image is now available for the Gemini model to analyze directly.",
-                }
+                    if artifact_data:
+                        # We found the image in artifacts, use it directly
+                        image_data = artifact_data
+                        print(f"[Image Analysis] Using image from artifact: {image_id}")
+                    else:
+                        # List available artifacts for debugging
+                        async def list_artifacts_async():
+                            try:
+                                artifacts = await tool_context.list_artifacts()
+                                print(f"[Image Analysis] Available artifacts: {artifacts}")
+                            except Exception as e:
+                                print(f"[Image Analysis] Error listing artifacts: {str(e)}")
+                        
+                        loop = asyncio.new_event_loop()
+                        loop.run_until_complete(list_artifacts_async())
+                        loop.close()
+        
+        # Use most recent image if no specific image provided or specified one not found
+        if not image_path and not image_data:
+            if not image_id:
+                print("[Image Analysis] No image_id provided, using most recent image")
             else:
-                return {
-                    "status": "partial_success",
-                    "message": f"Image loaded but could not be displayed properly.",
-                    "image": image_to_analyze,
-                    "image_displayed": False,
-                }
-        except Exception as e:
+                print(f"[Image Analysis] Could not find image: {image_id}, using most recent image")
+            
+            if current_image and current_image_path and os.path.exists(current_image_path):
+                image_path = current_image_path
+                image_filename = current_image
+                print(f"[Image Analysis] Using current image from state: {image_path}")
+            else:
+                # Look for any image in the images directory
+                ensure_image_directory_exists()
+                all_images = []
+                
+                # Check in main images directory
+                for file in os.listdir(IMAGE_DIR):
+                    if file.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
+                        all_images.append((os.path.join(IMAGE_DIR, file), os.path.getmtime(os.path.join(IMAGE_DIR, file))))
+                
+                # Check in generated subdirectory if it exists
+                generated_dir = os.path.join(IMAGE_DIR, "generated")
+                if os.path.exists(generated_dir):
+                    for file in os.listdir(generated_dir):
+                        if file.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
+                            all_images.append((os.path.join(generated_dir, file), os.path.getmtime(os.path.join(generated_dir, file))))
+                
+                # Find most recent image
+                if all_images:
+                    # Sort by modification time (most recent first)
+                    all_images.sort(key=lambda x: x[1], reverse=True)
+                    image_path = all_images[0][0]
+                    image_filename = os.path.basename(image_path)
+                    print(f"[Image Analysis] Using most recent image: {image_path}")
+                else:
+                    return {
+                        "status": "error",
+                        "message": "No images found to analyze. Please upload or generate an image first.",
+                    }
+        
+        # By now we should have image_path or image_data
+        if not image_path and not image_data:
             return {
                 "status": "error",
-                "message": f"Error creating artifact from image file: {str(e)}",
+                "message": "Could not find any image to analyze.",
             }
+            
+        # If we only have the path, read the image data
+        if image_path and not image_data:
+            try:
+                with open(image_path, "rb") as f:
+                    image_data = f.read()
+                print(f"[Image Analysis] Read image data from: {image_path}")
+                
+                # Get mime type from file extension
+                extension = os.path.splitext(image_path)[1].lower()
+                if extension == ".jpg" or extension == ".jpeg":
+                    mime_type = "image/jpeg"
+                else:
+                    mime_type = f"image/{extension[1:]}"  # Remove the dot
+                    
+            except Exception as e:
+                return {
+                    "status": "error",
+                    "message": f"Error reading image file: {str(e)}",
+                }
+        
+        # Update state with current image info
+        tool_context.state["current_image"] = image_filename
+        if image_path:
+            tool_context.state["current_image_path"] = image_path
+        
+        # Create image Part for the analysis
+        image_part = types.Part(
+            inline_data=types.Blob(
+                data=image_data,
+                mime_type=mime_type
+            )
+        )
+        
+        # Also save and attach the artifact for display in the model response
+        async def save_load_attach_artifact():
+            try:
+                # Save as artifact for future reference
+                artifact_id = await tool_context.save_artifact(filename=image_filename, artifact=image_part)
+                print(f"[Image Analysis] Saved artifact: {image_filename} (id: {artifact_id})")
+                
+                # Attach to response to ensure it shows in the UI
+                await tool_context.attach_artifact_to_next_response(image_filename)
+                print(f"[Image Analysis] Attached artifact to response: {image_filename}")
+                
+                # Store artifact info in state for future reference
+                tool_context.state["last_artifact_id"] = artifact_id
+                tool_context.state["last_artifact_filename"] = image_filename
+                
+                return artifact_id
+            except Exception as e:
+                print(f"[Image Analysis] Error in artifact operations: {str(e)}")
+                return None
+                
+        # Run the async artifact operations
+        try:
+            # Use ThreadPoolExecutor to run the async function
+            def run_async(async_func):
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                try:
+                    return new_loop.run_until_complete(async_func())
+                finally:
+                    new_loop.close()
+            
+            # Execute the async operations
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                artifact_id = executor.submit(run_async, save_load_attach_artifact).result()
+                
+            print(f"[Image Analysis] Artifact operations completed, ID: {artifact_id}")
+        except Exception as e:
+            print(f"[Image Analysis] Error in artifact threading: {str(e)}")
+            # Continue even if artifact handling failed
+        
+        # Tell the user what image we're analyzing
+        return {
+            "status": "success",
+            "message": f"Analyzing image: {image_filename}",
+            "image_path": image_path,
+            "image_filename": image_filename,
+        }
 
     except Exception as e:
-        return {
-            "status": "error",
-            "message": f"Error analyzing image: {str(e)}",
-        } 
+        # Catch all other errors
+        return {"status": "error", "message": f"Error analyzing image: {str(e)}"} 
