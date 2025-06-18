@@ -62,20 +62,9 @@ def create_image(
                     image_path = path
                     break
 
-            # If image wasn't found by path, try loading from artifact
+            # If image wasn't found by path, try loading from file system
             if not image_path:
-                try:
-                    # Try to get image data from artifacts
-                    artifact = tool_context.get_artifact(filename=edit_image_id)
-                    if artifact and hasattr(artifact, "inline_data") and artifact.inline_data:
-                        image_data = artifact.inline_data.data
-                        mime_type = artifact.inline_data.mime_type
-                        print(f"[Image Creation] Retrieved image data from artifact: {edit_image_id}")
-                except Exception as e:
-                    print(f"[Image Creation] Error retrieving artifact: {str(e)}")
-
-            # If we still don't have the image, return error
-            if not image_path and not image_data:
+                print(f"[Image Creation] Image path not found: {edit_image_id}")
                 return {
                     "status": "error",
                     "message": f"Image '{edit_image_id}' not found for editing",
@@ -83,17 +72,17 @@ def create_image(
 
             # Prepare image for editing
             try:
-                if image_path:
-                    # Read image from file
-                    with open(image_path, "rb") as f:
-                        image_data = f.read()
-                    print(f"[Image Creation] Loaded image from file: {image_path}")
-                    # Get mime type from file extension
-                    extension = os.path.splitext(image_path)[1].lower()
-                    if extension == ".jpg" or extension == ".jpeg":
-                        mime_type = "image/jpeg"
-                    else:
-                        mime_type = f"image/{extension[1:]}"  # Remove the dot
+                # Read image from file
+                with open(image_path, "rb") as f:
+                    image_data = f.read()
+                print(f"[Image Creation] Loaded image from file: {image_path}")
+                
+                # Get mime type from file extension
+                extension = os.path.splitext(image_path)[1].lower()
+                if extension == ".jpg" or extension == ".jpeg":
+                    mime_type = "image/jpeg"
+                else:
+                    mime_type = f"image/{extension[1:]}"  # Remove the dot
 
                 # Create image part for Gemini
                 image_part = genai_types.Part.from_bytes(
@@ -166,38 +155,80 @@ def create_image(
         with open(filepath, "wb") as f:
             f.write(image_data)
         print(f"[Image Creation] Saved image to: {filepath}")
+        
+        # Update state to track the image
+        tool_context.state["current_image"] = filename
+        tool_context.state["current_image_path"] = filepath
+        tool_context.state["image_generated"] = True  # Track that we've generated an image
 
-        # Save as an artifact to make it available to the model
+        # Create an artifact without display_name
+        image_artifact = genai_types.Part(
+            inline_data=genai_types.Blob(
+                data=image_data,
+                mime_type=mime_type
+            )
+        )
+        
         try:
-            # Create an artifact without display_name
-            image_artifact = genai_types.Part(
-                inline_data=genai_types.Blob(
-                    data=image_data,
-                    mime_type=mime_type
-                )
-            )
+            # Use the sync executor to run async methods in a synchronous context
+            from concurrent.futures import ThreadPoolExecutor
+            import asyncio
             
-            # Save the artifact
-            tool_context.save_artifact_sync(
-                filename=filename, artifact=image_artifact
-            )
-            print(f"[Image Creation] Saved image as artifact: {filename}")
+            # Define the async function to save and attach the artifact
+            async def save_and_attach_artifact():
+                try:
+                    # Save the artifact asynchronously
+                    artifact_id = await tool_context.save_artifact(filename=filename, artifact=image_artifact)
+                    print(f"[Image Creation] Saved image as artifact: {filename} (id: {artifact_id})")
+                    
+                    # Attach the artifact to next response
+                    await tool_context.attach_artifact_to_next_response(filename)
+                    print(f"[Image Creation] Attached artifact to next response: {filename}")
+                    return artifact_id
+                except Exception as e:
+                    print(f"[Image Creation] Error in async operation: {str(e)}")
+                    return None
             
-            # Return success along with all relevant information
-            return {
-                "status": "success",
-                "message": f"Successfully {operation_type} image based on the prompt",
-                "image_path": filepath,
-                "image_filename": filename,
-                "response_text": response_text,
-            }
+            # Create a new loop and run the async function
+            loop = asyncio.new_event_loop()
+            executor = ThreadPoolExecutor(max_workers=1)
+            
+            # Run the async operation in a separate thread
+            future = executor.submit(lambda: loop.run_until_complete(save_and_attach_artifact()))
+            artifact_id = future.result()
+            
+            # Clean up
+            executor.shutdown(wait=True)
+            loop.close()
+            
+            # If artifact was saved successfully
+            if artifact_id:
+                return {
+                    "status": "success",
+                    "message": f"Successfully {operation_type} image based on the prompt",
+                    "image_path": filepath,
+                    "image_filename": filename,
+                    "artifact_id": artifact_id,
+                    "image_displayed": True,
+                    "response_text": response_text,
+                }
+            else:
+                return {
+                    "status": "partial_success",
+                    "message": f"Image {operation_type} but could not save as artifact",
+                    "image_path": filepath,
+                    "image_filename": filename,
+                    "image_displayed": False,
+                    "response_text": response_text,
+                }
         except Exception as e:
-            # If artifact saving fails, still return success with the image path
+            # If artifact handling fails, still return success with the image path
             return {
                 "status": "partial_success",
                 "message": f"Image {operation_type} but could not save as artifact: {str(e)}",
                 "image_path": filepath,
                 "image_filename": filename,
+                "image_displayed": False,
                 "response_text": response_text,
             }
 

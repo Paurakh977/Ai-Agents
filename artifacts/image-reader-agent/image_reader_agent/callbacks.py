@@ -3,6 +3,7 @@ Callbacks for the Image Reader Agent.
 """
 
 import os
+import asyncio
 from typing import Dict, Optional
 
 import google.genai.types as types
@@ -60,6 +61,7 @@ async def before_model_callback(
 
     # Process any image parts we found
     image_count = 0
+    latest_image_name = None
 
     for part in last_user_message_parts:
         # Debug info
@@ -94,6 +96,7 @@ async def before_model_callback(
         # Generate simple sequential filename
         image_name = f"uploaded_image_{image_count}.{extension}"
         image_path = os.path.join(image_dir, image_name)
+        latest_image_name = image_name  # Track the latest image
 
         # Save the image
         try:
@@ -102,22 +105,27 @@ async def before_model_callback(
                 f.write(image_data)
             print(f"[Image Callback] Saved image: {image_name}")
             
-            # Save image as artifact for the model to access
+            # Create artifact for the model to access
             image_artifact = types.Part(
                 inline_data=types.Blob(data=image_data, mime_type=mime_type)
             )
             
-            # Save as an artifact
+            # Save as an artifact and attach to next response - since we're in an async function, 
+            # we can use await directly
             try:
-                # Use the synchronous version to avoid coroutine issues
-                artifact_version = callback_context.save_artifact_sync(
+                # Since we're already in an async function, we can use await directly
+                artifact_id = await callback_context.save_artifact(
                     filename=image_name, artifact=image_artifact
                 )
-                print(f"[Image Callback] Saved image as artifact: {image_name} (version {artifact_version})")
+                print(f"[Image Callback] Saved image as artifact: {image_name} (id: {artifact_id})")
                 
-                # Store the current image in state
+                # CRITICAL: Mark the artifact to be displayed in the model's response
+                await callback_context.attach_artifact_to_next_response(image_name)
+                print(f"[Image Callback] Attached artifact to response: {image_name}")
+                
+                # Store the current image in state for future reference
                 callback_context.state["current_image"] = image_name
-                callback_context.state["current_image_version"] = artifact_version
+                callback_context.state["current_image_path"] = image_path
             except Exception as e:
                 print(f"[Image Callback] Error saving image as artifact: {str(e)}")
                 
