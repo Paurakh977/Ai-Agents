@@ -43,7 +43,7 @@ def analyze_image(
         # so we just need to load it for analysis
         try:
             # This will make the image available to the multimodal model
-            tool_context.load_artifact(filename=image_to_analyze)
+            tool_context.load_artifact_sync(filename=image_to_analyze)
             
             # Return success along with image metadata
             return {

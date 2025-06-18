@@ -31,6 +31,22 @@ async def before_model_callback(
     invocation_id = callback_context.invocation_id
     print(f"[Image Callback] Processing for agent: {agent_name} (Inv: {invocation_id})")
 
+    # IMPORTANT: Clean ALL images in the conversation history to remove display_name attributes
+    # This prevents the "display_name parameter is not supported in Gemini API" error
+    if llm_request.contents:
+        for content in llm_request.contents:
+            if hasattr(content, "parts"):
+                for part in content.parts:
+                    if (hasattr(part, "inline_data") and part.inline_data and
+                        hasattr(part.inline_data, "mime_type") and 
+                        part.inline_data.mime_type and
+                        part.inline_data.mime_type.startswith("image/")):
+                        
+                        # Remove display_name if present as it's not supported by Gemini API
+                        if hasattr(part.inline_data, "display_name"):
+                            print(f"[Image Callback] Removing display_name from conversation history image")
+                            delattr(part.inline_data, "display_name")
+
     # Ensure image directory exists
     image_dir = ensure_image_directory_exists()
 
@@ -60,6 +76,11 @@ async def before_model_callback(
         image_data = getattr(part.inline_data, "data", None)
         if not image_data:
             continue
+        
+        # IMPORTANT: Remove display_name if present - this is causing the Gemini API error
+        if hasattr(part.inline_data, "display_name"):
+            print(f"[Image Callback] Removing display_name attribute that's not supported by Gemini API")
+            delattr(part.inline_data, "display_name")
 
         # We have an image to save
         image_count += 1
@@ -88,8 +109,8 @@ async def before_model_callback(
             
             # Save as an artifact
             try:
-                # Use await to properly handle the coroutine
-                artifact_version = await callback_context.save_artifact(
+                # Use the synchronous version to avoid coroutine issues
+                artifact_version = callback_context.save_artifact_sync(
                     filename=image_name, artifact=image_artifact
                 )
                 print(f"[Image Callback] Saved image as artifact: {image_name} (version {artifact_version})")

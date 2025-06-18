@@ -8,10 +8,6 @@ from .callbacks import before_model_callback
 from .constants import GEMINI_MODEL
 from .tools import analyze_image, create_image
 
-
-
-
-
 # Create the Image Reader Agent
 image_reader_agent = Agent(
     name="image_reader_agent",
