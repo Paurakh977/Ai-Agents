@@ -33,6 +33,7 @@ def analyze_image(
         # Get the current image information from state
         current_image = tool_context.state.get("current_image")
         current_image_path = tool_context.state.get("current_image_path")
+        last_uploaded_image = tool_context.state.get("last_uploaded_image")
         
         # Determine which image to analyze
         image_path = None
@@ -84,10 +85,18 @@ def analyze_image(
                             print(f"[Image Analysis] Error loading artifact: {str(e)}")
                             return None, None
                     
-                    # Run the async function in a new event loop
-                    loop = asyncio.new_event_loop()
-                    artifact_data, mime_type = loop.run_until_complete(load_artifact_async())
-                    loop.close()
+                    # Run the async function using ThreadPoolExecutor
+                    def run_async(async_func):
+                        new_loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(new_loop)
+                        try:
+                            return new_loop.run_until_complete(async_func())
+                        finally:
+                            new_loop.close()
+                    
+                    # Execute the async loading operation
+                    with ThreadPoolExecutor(max_workers=1) as executor:
+                        artifact_data, mime_type = executor.submit(run_async, load_artifact_async).result()
                     
                     if artifact_data:
                         # We found the image in artifacts, use it directly
@@ -95,44 +104,63 @@ def analyze_image(
                         print(f"[Image Analysis] Using image from artifact: {image_id}")
                     else:
                         # List available artifacts for debugging
-                        async def list_artifacts_async():
-                            try:
-                                artifacts = await tool_context.list_artifacts()
-                                print(f"[Image Analysis] Available artifacts: {artifacts}")
-                            except Exception as e:
-                                print(f"[Image Analysis] Error listing artifacts: {str(e)}")
-                        
-                        loop = asyncio.new_event_loop()
-                        loop.run_until_complete(list_artifacts_async())
-                        loop.close()
+                        with ThreadPoolExecutor(max_workers=1) as executor:
+                            def list_artifacts_func():
+                                async def list_artifacts_async():
+                                    try:
+                                        artifacts = await tool_context.list_artifacts()
+                                        print(f"[Image Analysis] Available artifacts: {artifacts}")
+                                        return artifacts
+                                    except Exception as e:
+                                        print(f"[Image Analysis] Error listing artifacts: {str(e)}")
+                                        return []
+                                return run_async(list_artifacts_async)
+                            
+                            available_artifacts = executor.submit(list_artifacts_func).result() or []
+                            tool_context.state["available_artifacts"] = available_artifacts
         
         # Use most recent image if no specific image provided or specified one not found
         if not image_path and not image_data:
-            if not image_id:
-                print("[Image Analysis] No image_id provided, using most recent image")
-            else:
-                print(f"[Image Analysis] Could not find image: {image_id}, using most recent image")
-            
-            if current_image and current_image_path and os.path.exists(current_image_path):
+            # First: try most recently uploaded image if it exists
+            if last_uploaded_image and not image_id:
+                print(f"[Image Analysis] Using last uploaded image: {last_uploaded_image}")
+                upload_path = os.path.join(IMAGE_DIR, last_uploaded_image)
+                if os.path.exists(upload_path):
+                    image_path = upload_path
+                    image_filename = last_uploaded_image
+            # Second: try current image in state
+            elif not image_path and current_image and current_image_path and os.path.exists(current_image_path):
                 image_path = current_image_path
                 image_filename = current_image
                 print(f"[Image Analysis] Using current image from state: {image_path}")
             else:
+                if not image_id:
+                    print("[Image Analysis] No image_id provided, searching for images")
+                else:
+                    print(f"[Image Analysis] Could not find image: {image_id}, searching for alternatives")
+                
                 # Look for any image in the images directory
                 ensure_image_directory_exists()
                 all_images = []
                 
-                # Check in main images directory
+                # First prioritize uploaded images
                 for file in os.listdir(IMAGE_DIR):
                     if file.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
-                        all_images.append((os.path.join(IMAGE_DIR, file), os.path.getmtime(os.path.join(IMAGE_DIR, file))))
+                        if file.startswith("uploaded_"):
+                            # Higher priority for uploaded images (newer timestamp)
+                            all_images.append((os.path.join(IMAGE_DIR, file), 
+                                              os.path.getmtime(os.path.join(IMAGE_DIR, file)) + 1000))
+                        else:
+                            all_images.append((os.path.join(IMAGE_DIR, file), 
+                                              os.path.getmtime(os.path.join(IMAGE_DIR, file))))
                 
                 # Check in generated subdirectory if it exists
                 generated_dir = os.path.join(IMAGE_DIR, "generated")
                 if os.path.exists(generated_dir):
                     for file in os.listdir(generated_dir):
                         if file.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
-                            all_images.append((os.path.join(generated_dir, file), os.path.getmtime(os.path.join(generated_dir, file))))
+                            all_images.append((os.path.join(generated_dir, file), 
+                                             os.path.getmtime(os.path.join(generated_dir, file))))
                 
                 # Find most recent image
                 if all_images:
@@ -233,6 +261,7 @@ def analyze_image(
             "message": f"Analyzing image: {image_filename}",
             "image_path": image_path,
             "image_filename": image_filename,
+            "image_artifact_id": tool_context.state.get("last_artifact_id")
         }
 
     except Exception as e:

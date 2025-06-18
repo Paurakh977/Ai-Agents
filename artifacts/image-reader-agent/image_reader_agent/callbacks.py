@@ -5,6 +5,7 @@ Callbacks for the Image Reader Agent.
 import os
 import asyncio
 from typing import Dict, Optional
+from concurrent.futures import ThreadPoolExecutor
 
 import google.genai.types as types
 from google.adk.agents.callback_context import CallbackContext
@@ -48,22 +49,41 @@ async def before_model_callback(
                             print(f"[Image Callback] Removing display_name from conversation history image")
                             delattr(part.inline_data, "display_name")
                             
-    # Check if we have generated images in artifacts that need to be tracked
+    # Check and record available artifacts at session start
     try:
-        artifacts = await callback_context.list_artifacts()
+        # This will examine what artifacts are currently available from previous model runs
+        print("[Image Callback] Checking for available artifacts")
+        artifacts = []
+        
+        # Use ThreadPoolExecutor to run the async function
+        def run_async(async_func):
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(async_func())
+            finally:
+                loop.close()
+                
+        # Define artifact listing function
+        async def list_artifacts_async():
+            return await callback_context.list_artifacts()
+        
+        # Execute the async operation
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            artifacts = executor.submit(run_async, list_artifacts_async).result() or []
+        
         if artifacts:
             print(f"[Image Callback] Current artifacts: {artifacts}")
-            
             # Store available artifacts in state for reference
             callback_context.state["available_artifacts"] = artifacts
             
-            # For convenience, always attach the most recent image to enable editing
-            current_image = callback_context.state.get("current_image")
-            if current_image and current_image in artifacts:
-                print(f"[Image Callback] Reconnecting to current image: {current_image}")
-                await callback_context.attach_artifact_to_next_response(current_image)
+            # For convenience, track most recent image artifact
+            if artifacts:
+                latest_artifact = artifacts[-1]
+                callback_context.state["last_artifact_filename"] = latest_artifact
+                print(f"[Image Callback] Latest artifact: {latest_artifact}")
     except Exception as e:
-        print(f"[Image Callback] Error listing artifacts: {str(e)}")
+        print(f"[Image Callback] Error checking artifacts: {str(e)}")
 
     # Ensure image directory exists
     image_dir = ensure_image_directory_exists()
@@ -127,26 +147,42 @@ async def before_model_callback(
                 inline_data=types.Blob(data=image_data, mime_type=mime_type)
             )
             
-            # Save as an artifact and attach to next response - since we're in an async function, 
-            # we can use await directly
+            # Save and attach artifact using ThreadPoolExecutor
             try:
-                # Since we're already in an async function, we can use await directly
-                artifact_id = await callback_context.save_artifact(
-                    filename=image_name, artifact=image_artifact
-                )
-                print(f"[Image Callback] Saved image as artifact: {image_name} (id: {artifact_id})")
+                # Define async functions for artifact operations
+                async def save_artifact_async():
+                    artifact_id = await callback_context.save_artifact(
+                        filename=image_name, artifact=image_artifact
+                    )
+                    print(f"[Image Callback] Saved image as artifact: {image_name} (id: {artifact_id})")
+                    return artifact_id
                 
-                # CRITICAL: Mark the artifact to be displayed in the model's response
-                await callback_context.attach_artifact_to_next_response(image_name)
-                print(f"[Image Callback] Attached artifact to response: {image_name}")
+                async def attach_artifact_async(filename):
+                    await callback_context.attach_artifact_to_next_response(filename)
+                    print(f"[Image Callback] Attached artifact to response: {filename}")
                 
-                # Store the current image in state for future reference
+                # Run the async operations in sequence
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    # Save artifact first
+                    artifact_id = executor.submit(run_async, save_artifact_async).result()
+                    
+                    # Then attach it
+                    if artifact_id is not None:
+                        executor.submit(run_async, lambda: attach_artifact_async(image_name)).result()
+                
+                # Store key information in state
                 callback_context.state["current_image"] = image_name
                 callback_context.state["current_image_path"] = image_path
                 callback_context.state["last_artifact_id"] = artifact_id
                 callback_context.state["last_artifact_filename"] = image_name
+                callback_context.state["last_uploaded_image"] = image_name
+                
+                # Also mark with a timestamp to track upload sequence
+                import time
+                callback_context.state[f"uploaded_time_{image_name}"] = time.time()
+                
             except Exception as e:
-                print(f"[Image Callback] Error saving image as artifact: {str(e)}")
+                print(f"[Image Callback] Error handling artifact: {str(e)}")
                 
         except Exception as e:
             print(f"[Image Callback] Error saving image: {str(e)}")

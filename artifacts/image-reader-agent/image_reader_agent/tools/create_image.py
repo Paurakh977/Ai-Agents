@@ -33,9 +33,20 @@ def create_image(
     try:
         print(f"[Image Creation] Starting image {'editing' if edit_image_id else 'generation'}")
         print(f"[Image Creation] Prompt: {prompt}")
-        if edit_image_id:
+        
+        # IMPORTANT: If no edit_image_id is provided but we have an uploaded image in state,
+        # automatically use that for editing rather than generating a new image
+        is_edit_mode = False
+        if not edit_image_id and "edit" in prompt.lower() and tool_context.state.get("last_artifact_filename"):
+            last_image = tool_context.state.get("last_artifact_filename")
+            if last_image.startswith("uploaded_"):
+                edit_image_id = last_image
+                print(f"[Image Creation] Auto-detected edit request for uploaded image: {edit_image_id}")
+                is_edit_mode = True
+        elif edit_image_id:
+            is_edit_mode = True
             print(f"[Image Creation] Editing image: {edit_image_id}")
-
+        
         # Initialize the GenAI client
         client = genai.Client()
 
@@ -44,7 +55,7 @@ def create_image(
             response_modalities=["TEXT", "IMAGE"]
         )
 
-        if edit_image_id:
+        if is_edit_mode:
             # EDITING MODE: Find the image to edit
             image_path = None
             image_data = None
@@ -98,25 +109,32 @@ def create_image(
                     print(f"[Image Creation] Error while trying to load artifact: {str(e)}")
                     # Continue to try file paths
 
-            # If image wasn't found by artifact or path
+            # If image wasn't found by artifact or path, try last uploaded image
             if not image_path and not image_data:
-                # Try to list available artifacts to help diagnose the issue
-                async def list_artifacts_async():
-                    try:
-                        artifacts = await tool_context.list_artifacts()
-                        print(f"[Image Creation] Available artifacts: {artifacts}")
-                    except Exception as e:
-                        print(f"[Image Creation] Error listing artifacts: {str(e)}")
-                
-                loop = asyncio.new_event_loop()
-                loop.run_until_complete(list_artifacts_async())
-                loop.close()
-                
-                return {
-                    "status": "error",
-                    "message": f"Image '{edit_image_id}' not found for editing. Please provide the exact filename.",
-                    "available_images": tool_context.state.get("current_image", "None")
-                }
+                print("[Image Creation] Trying to find last uploaded image")
+                uploaded_images = [f for f in os.listdir(IMAGE_DIR) if f.startswith("uploaded_image_")]
+                if uploaded_images:
+                    image_path = os.path.join(IMAGE_DIR, uploaded_images[-1])
+                    edit_image_id = uploaded_images[-1]
+                    print(f"[Image Creation] Found uploaded image: {image_path}")
+                else:
+                    # Try to list available artifacts to help diagnose the issue
+                    async def list_artifacts_async():
+                        try:
+                            artifacts = await tool_context.list_artifacts()
+                            print(f"[Image Creation] Available artifacts: {artifacts}")
+                        except Exception as e:
+                            print(f"[Image Creation] Error listing artifacts: {str(e)}")
+                    
+                    loop = asyncio.new_event_loop()
+                    loop.run_until_complete(list_artifacts_async())
+                    loop.close()
+                    
+                    return {
+                        "status": "error",
+                        "message": f"Image '{edit_image_id}' not found for editing. Please provide the exact filename.",
+                        "available_images": tool_context.state.get("current_image", "None")
+                    }
 
             # If we have a path but no data yet, load the image data
             if image_path and not image_data:
@@ -201,7 +219,7 @@ def create_image(
             }
 
         # Create a unique filename for the image
-        operation_type = "edited" if edit_image_id else "generated"
+        operation_type = "edited" if is_edit_mode else "generated"
         # Create a hash value to use as part of the filename for uniqueness
         hash_value = abs(hash(prompt + str(uuid.uuid4()))) % 10000
         filename = f"{operation_type}_image_{hash_value}.png"
