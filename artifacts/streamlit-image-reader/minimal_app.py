@@ -116,12 +116,13 @@ async def analyze_image(tool_context: ToolContext, *, image_index: Optional[int]
             
             # Return successful result
             return {
-                "success": f"Image {image_to_analyze} loaded for analysis",
+                "success": f"artifact {image_to_analyze} loaded for analysis",
                 "mime_type": artifact.inline_data.mime_type,
-                "data": artifact.inline_data.data,
+                # "data": artifact.inline_data.data,
                 "image_name": image_to_analyze,
                 "image_index": available_images.index(image_to_analyze) + 1,
-                "total_images": len(available_images)
+                "total_images": len(available_images),
+                
             }
         except Exception as e:
             logger.error(f"Failed to load artifact {image_to_analyze}: {str(e)}")
