@@ -16,6 +16,8 @@ import uuid
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+
+
 # Import ADK components
 from google.adk.agents import Agent
 from google.adk.runners import Runner
@@ -45,7 +47,7 @@ IMAGE_DIR = "images"
 os.makedirs(IMAGE_DIR, exist_ok=True)
 
 # Define analyze_image tool
-async def analyze_image(tool_context: ToolContext, *, image_index: Optional[int] = None, file_name: Optional[str] = None) -> Dict[str, Any]:
+async def analyze_image(tool_context: ToolContext, image_index: Optional[int] = None, file_name: Optional[str] = None) -> Dict[str, Any]:
     """Tool to analyze an image with Gemini's multimodal capabilities.
     
     Args:
@@ -142,7 +144,7 @@ async def before_model_callback(callback_context: CallbackContext, llm_request: 
         return None
         
     user_parts = llm_request.contents[-1].parts if llm_request.contents[-1].parts else []
-    logger.info(f"Found {len(user_parts)} parts in user message")
+    
     
     # Initialize state variables if they don't exist - CRITICAL: Use get() with default to preserve existing state
     if "all_uploaded_images" not in callback_context.state:
@@ -154,7 +156,7 @@ async def before_model_callback(callback_context: CallbackContext, llm_request: 
     
     # IMPORTANT: Get existing images to preserve state across calls
     existing_images = callback_context.state.get("all_uploaded_images", [])
-    logger.info(f"Existing images in state before processing: {len(existing_images)}")
+    
     
     # Track images in this message
     images_in_message = []
@@ -240,7 +242,7 @@ async def before_model_callback(callback_context: CallbackContext, llm_request: 
 # Create agent with dynamic instruction
 def create_agent():
     """Create the image reader agent with dynamic state and artifact placeholders"""
-    logger.info("Creating image reader agent")
+    
     return Agent(
         name="image_reader_agent",
         description="Analyzes images uploaded by users",
@@ -350,7 +352,7 @@ async def process_agent_response(runner, content, session_id):
         final_event = None
         all_events = []  # Store all events to find grounding metadata
         
-        logger.info(f"Processing agent response for session: {session_id}")
+        
         
         # Make sure we use the correct parameter names for run_async
         events_generator = runner.run_async(
@@ -374,7 +376,7 @@ async def process_agent_response(runner, content, session_id):
                     final_response_text = f"Agent escalated: {event.error_message or 'No specific message.'}"
                 break
         
-        logger.info(f"Agent processing complete with {len(all_events)} events")
+    
         return {
             "author": final_event.author if final_event else "unknown",
             "content": final_event.content if final_event else None,
