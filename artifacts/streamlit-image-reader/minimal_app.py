@@ -1,7 +1,6 @@
 """
 Minimal Streamlit + ADK Image Reader App
 """
-
 import os
 import streamlit as st
 from dotenv import load_dotenv
@@ -11,14 +10,6 @@ import base64
 import logging
 import time
 import uuid
-
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-
-
-# Import ADK components
 from google.adk.agents import Agent
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
@@ -27,9 +18,17 @@ from google.genai import types as genai_types
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.models import LlmRequest, LlmResponse
 from google.adk.artifacts import InMemoryArtifactService
+from google import genai
+from google.genai import types
+from PIL import Image
+from io import BytesIO
+import base64
 
-# Load environment variables
 load_dotenv()
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 
 # Configure API key
 API_KEY = os.getenv("GOOGLE_API_KEY")
@@ -42,9 +41,95 @@ APP_NAME = "image_reader"
 USER_ID = "streamlit_user"
 GEMINI_MODEL = "gemini-2.0-flash-exp"
 IMAGE_DIR = "images"
+GENERATED_IMAGES_DIR = os.path.join(IMAGE_DIR, "generated")
 
 # Create images directory if it doesn't exist
 os.makedirs(IMAGE_DIR, exist_ok=True)
+os.makedirs(GENERATED_IMAGES_DIR, exist_ok=True)
+
+
+async def generate_image(tool_context: ToolContext, Prompt: str)->Dict[str, Any]:
+    """Tool to generate an image with Gemini's multimodal capabilities.
+    
+    Args:
+        tool_context: ToolContext object
+        Prompt: String, the prompt to generate an image
+        
+    Returns: 
+        dict: A dictionary containing the image generation results, mime type, and image metadata
+    """
+    try:
+        contents = [ genai_types.Part.from_text(text=Prompt) ]
+        client= genai.Client()
+        response = client.models.generate_content(
+        model="gemini-2.0-flash-preview-image-generation",
+        contents=contents,
+        config=types.GenerateContentConfig(
+        response_modalities=['TEXT', 'IMAGE']
+            )
+        )
+
+        for part in response.candidates[0].content.parts:
+            if part.inline_data is not None:
+                # Create a unique filename with timestamp
+                filename = f"generated_image_{time.time()}.{part.inline_data.mime_type.split('/')[-1]}"
+                
+                # Save image to local filesystem for streamlit display
+                local_path = os.path.join(GENERATED_IMAGES_DIR, filename)
+                
+                # Save the binary data to a file
+                with open(local_path, 'wb') as f:
+                    f.write(part.inline_data.data)
+                
+                logger.info(f"Image saved to local path: {local_path}")
+                
+                # save the image as artifact
+                image_artifact = genai_types.Part(
+                    inline_data=genai_types.Blob(
+                        data=part.inline_data.data,
+                        mime_type=part.inline_data.mime_type
+                    )
+                )
+                artifact_version = await tool_context.save_artifact(
+                    filename=filename,  
+                    artifact=image_artifact
+                )
+                if artifact_version is not None:
+                    logger.info(f"Image saved to artifact successfully.")
+                    artifact = await tool_context.load_artifact(filename=filename,version=artifact_version)
+                    
+                    # hydrating the state if not exists
+                    if "generated_image_name" not in tool_context.state:
+                        tool_context.state["generated_image_name"] = []
+                    if "generated_image_version" not in tool_context.state:
+                        tool_context.state["generated_image_version"] = {}
+                    if "generated_image_paths" not in tool_context.state:
+                        tool_context.state["generated_image_paths"] = []
+                    
+                    # Store both artifact and local file info in state
+                    tool_context.state["generated_image_name"].append(filename)
+                    tool_context.state["generated_image_paths"].append(local_path)
+                    
+                    if filename not in tool_context.state["generated_image_version"]:
+                        tool_context.state["generated_image_version"][filename] = []
+                    tool_context.state["generated_image_version"][filename].append(artifact_version)
+                    tool_context.state["total_generated_images"] = len(tool_context.state["generated_image_name"])
+                    
+                    return {
+                        "image_generated": True, 
+                        "message": f"Image generated successfully. Artifact saved by name: {filename} and current version: {artifact_version}",
+                        "artifact_mime_type": artifact.inline_data.mime_type,
+                        "local_path": local_path,
+                        "filename": filename
+                    }    
+                else:
+                    logger.error(f"Image generation failed/not complete.")
+
+        return {"image_generated": False, "message": f"No image generated {[f'{part.text}' for part in response.candidates[0].content.parts]}"}
+            
+    except Exception as e:
+        logger.error(f"Error in generate_image: {str(e)}")
+        return {"error": f"Error: {str(e)}"}
 
 # Define analyze_image tool
 async def analyze_image(tool_context: ToolContext, image_index: Optional[int] = None, file_name: Optional[str] = None) -> Dict[str, Any]:
@@ -248,7 +333,7 @@ def create_agent():
         description="Analyzes images uploaded by users",
         model=GEMINI_MODEL,
         before_model_callback=before_model_callback,
-        tools=[analyze_image],
+        tools=[analyze_image,generate_image],
         instruction="""
         # Image Analysis Agent
         
@@ -264,12 +349,23 @@ def create_agent():
         
         Last analyzed image: {last_analyzed_image?}
         
+        
+        ## Image Generation
+        
+        You can also generate images by the tool generate_image.
+       
+        The generated images can be acessed by the following state variables:
+        total_generated_images: {total_generated_images?}
+        generated_image_name: {generated_image_name?}
+        generated_image_versions dictionary with key as filename and value as list of versions : {generated_image_version?}
+        
         ## Your Responsibilities
         
         When a user uploads an image:
         1. Describe what you see in detail
         2. If text is visible, transcribe it
         3. Answer any questions about the image content
+        4. If the user asks to generate an image, you can use the generate_image tool to generate an image.
         
         ## Using Multiple Images
         
@@ -294,6 +390,11 @@ def create_agent():
         
         NEVER call analyze_image() without parameters - you must always specify which image to analyze!
         
+        Always use the generate_image tool to generate an image.
+        example:
+        ```
+        generate_image(prompt="A beautiful sunset over a calm ocean")
+        ```
         Always be helpful and accurate in your analysis.
         """
     )
@@ -351,8 +452,8 @@ async def process_agent_response(runner, content, session_id):
         final_response_text = None
         final_event = None
         all_events = []  # Store all events to find grounding metadata
-        
-        
+        generated_image_path = None
+        generated_image_filename = None
         
         # Make sure we use the correct parameter names for run_async
         events_generator = runner.run_async(
@@ -367,6 +468,17 @@ async def process_agent_response(runner, content, session_id):
             if hasattr(event, 'actions') and event.actions and hasattr(event.actions, 'tool_calls') and event.actions.tool_calls:
                 for tool_call in event.actions.tool_calls:
                     logger.info(f"Tool call: {tool_call.name} with params: {tool_call.parameters}")
+            
+            # Check for function responses with image generation
+            if hasattr(event, 'content') and event.content and hasattr(event.content, 'parts'):
+                for part in event.content.parts:
+                    if hasattr(part, 'function_response') and part.function_response:
+                        if part.function_response.name == 'generate_image':
+                            response_data = part.function_response.response
+                            if response_data.get('image_generated') and 'local_path' in response_data:
+                                generated_image_path = response_data['local_path']
+                                generated_image_filename = response_data.get('filename', '')
+                                logger.info(f"Found generated image path: {generated_image_path}")
             
             if event.is_final_response():
                 final_event = event
@@ -384,7 +496,9 @@ async def process_agent_response(runner, content, session_id):
             "final_response": True,
             "final_response_text": final_response_text,
             "final_event": final_event,
-            "all_events": all_events
+            "all_events": all_events,
+            "generated_image_path": generated_image_path,
+            "generated_image_filename": generated_image_filename
         }
     except Exception as e:
         logger.error(f"Error in process_agent_response: {str(e)}")
@@ -414,10 +528,10 @@ def run_agent_with_content(content):
         
         # Then run the agent
         response = loop.run_until_complete(process_agent_response(runner, content, session_id))
-        return response.get("final_response_text", "No response received")
+        return response
     except Exception as e:
         logger.error(f"Error in run_agent_with_content: {str(e)}")
-        return f"Error: {str(e)}"
+        return {"final_response_text": f"Error: {str(e)}"}
     finally:
         loop.close()
 
@@ -425,6 +539,10 @@ def run_agent_with_content(content):
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.write(msg["content"])
+        # Check if this message contains an image path
+        if isinstance(msg, dict) and "image_path" in msg:
+            if os.path.exists(msg["image_path"]):
+                st.image(msg["image_path"], caption=msg.get("image_caption", "Generated image"))
 
 # File uploader - modified to accept multiple files
 uploaded_files = st.file_uploader("Upload images", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
@@ -464,10 +582,22 @@ if uploaded_files:
                 
                 # Make SINGLE agent call with all images
                 response = run_agent_with_content(user_content)
-                st.write(response)
+                response_text = response.get("final_response_text", "No response received")
+                st.write(response_text)
+                
+                # Check if an image was generated
+                if "generated_image_path" in response and response["generated_image_path"]:
+                    img_path = response["generated_image_path"]
+                    if os.path.exists(img_path):
+                        st.image(img_path, caption=f"Generated image: {response.get('generated_image_filename', '')}")
+                        st.success("Image generated successfully!")
         
-        # Save to history
-        st.session_state.messages.append({"role": "assistant", "content": response})
+        # Save to history with image info if available
+        msg_data = {"role": "assistant", "content": response.get("final_response_text", "No response received")}
+        if "generated_image_path" in response and response["generated_image_path"]:
+            msg_data["image_path"] = response["generated_image_path"]
+            msg_data["image_caption"] = f"Generated image: {response.get('generated_image_filename', '')}"
+        st.session_state.messages.append(msg_data)
         
         # Clear the uploaded image to allow for new uploads
         st.session_state.uploaded_files = None
@@ -492,8 +622,20 @@ if not uploaded_files:  # Only show chat input when not uploading an image
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
                 response = run_agent_with_content(user_content)
-                st.write(response)
+                response_text = response.get("final_response_text", "No response received")
+                st.write(response_text)
+                
+                # Check if an image was generated
+                if "generated_image_path" in response and response["generated_image_path"]:
+                    img_path = response["generated_image_path"]
+                    if os.path.exists(img_path):
+                        st.image(img_path, caption=f"Generated image: {response.get('generated_image_filename', '')}")
+                        st.success("Image generated successfully!")
         
-        # Save to history
-        st.session_state.messages.append({"role": "assistant", "content": response})
+        # Save to history with image info if available
+        msg_data = {"role": "assistant", "content": response.get("final_response_text", "No response received")}
+        if "generated_image_path" in response and response["generated_image_path"]:
+            msg_data["image_path"] = response["generated_image_path"]
+            msg_data["image_caption"] = f"Generated image: {response.get('generated_image_filename', '')}"
+        st.session_state.messages.append(msg_data)
         st.rerun() 
