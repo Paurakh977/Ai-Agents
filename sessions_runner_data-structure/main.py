@@ -64,6 +64,9 @@ state_2 =  {
     ]
 }
 
+
+
+
 async def create_session() -> InMemorySessionService:
     session_service = InMemorySessionService()
     await session_service.create_session(
@@ -208,8 +211,8 @@ async def main():
             else:
                 print("ℹ️  No Google Search was used for this query.")
             
-            if False:  # Set to True for debugging
-                ic(response)
+            # if True:  # Set to True for debugging
+            #     ic(response["all_events"].parts)
             
         except Exception as e:
             print(f"❌ Error calling agent: {e}")
