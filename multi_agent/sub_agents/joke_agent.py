@@ -21,6 +21,7 @@ joke_agent = LlmAgent(
     use get_joke tool to get a joke based on the user's category.
     Returns a joke of the given category.
     Supported categories: "programming", "ai", "dad"
+    
     get_joke tool returns a dictionary with the following structure:
     Returns:
       {
